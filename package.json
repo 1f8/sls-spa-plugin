@@ -1,0 +1,10 @@
+{
+  "name": "@1f8/sls-spa-plugin",
+  "version": "1.5.0",
+  "description": "A plugin to simplify deploying Single Page Application using S3 and CloudFront",
+  "author": "1F8",
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "serverless": "1.x"
+  }
+}
