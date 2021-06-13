@@ -41,6 +41,7 @@ class ServerlessPlugin {
     // const result = spawnSync('cmd.exe', ['/c', 'aws'].concat(args));
     // return result;
     // FOR NON-WINDOWS
+    this.serverless.cli.log('SPA command', ['aws', ...args].join(' '))
     const result = spawnSync('aws', args);
 
     const stdout = result.stdout;
@@ -57,18 +58,30 @@ class ServerlessPlugin {
 
   // syncs the `client/dist` directory to the provided bucket
   syncDirectory() {
-    const s3Bucket = this.serverless.variables.service.custom.resources.s3Bucket || this.serverless.variables.service.custom.resources.s3WebappBucket;
-    const distPath = this.serverless.variables.service.custom.spaPath;
+
+    // check if distribution was specified
+    let { bucketName, path, profile } = this.getOptions()
+
+    // fallback bucketname to custom bucket names
+    if (!bucketName) {
+      const s3Bucket = this.serverless.variables.service.custom.resources.s3Bucket || this.serverless.variables.service.custom.resources.s3WebappBucket;
+      bucketName = s3Bucket
+    }
+
     const args = [
       's3',
       'sync',
-      distPath,
-      `s3://${s3Bucket}/`,
+      path,
+      `s3://${bucketName}/`,
       '--delete',
-      '--profile',
-      this.serverless.variables.service.provider.profile,
     ];
-    this.serverless.cli.log('Syncing to ' + s3Bucket);
+    if (profile) {
+      this.serverless.cli.log(`Using profile: ${profile}`)
+      args.push('--profile')
+      args.push(profile)
+    }
+
+    this.serverless.cli.log('Syncing to ' + bucketName);
     this.runAwsCommand(args);
 
     // const { stdout, sterr } = this.runAwsCommand(args);
@@ -108,41 +121,80 @@ class ServerlessPlugin {
     throw error;
   }
 
+  getOptions() {
+    const spaOptions = this.serverless.variables.service.custom.spa
+
+    let stage = this.options.stage
+    try {
+      stage = this.serverless.variables.service.custom.stage
+    } catch {
+      this.serverless.cli.log('SPA - Recommended to set stage in custom variables')
+    }
+
+    let bucket, distributionId
+    if (stage==='prod') {
+      bucket= spaOptions.bucketProd
+      distributionId = spaOptions.distributionProd
+    }
+
+    if (stage==='dev') {
+      bucket= spaOptions.bucketDev
+      distributionId = spaOptions.distributionDev
+    }
+
+    const profile = this.serverless.variables.service.provider.profile
+
+    return {
+      ...spaOptions,
+      bucket, distributionId, stage,
+      profile,
+    }
+  }
+
   async invalidateCache() {
-    const provider = this.serverless.getProvider('aws');
+    // check if distribution was specified
+    let { distributionId, profile } = this.getOptions()
 
-    const domain = await this.domainInfo();
-
-    const result = await provider.request(
-      'CloudFront',
-      'listDistributions',
-      {},
-      this.options.stage,
-      this.options.region,
-    );
-
-    const distributions = result.DistributionList.Items;
-    const distribution = distributions.find(
-      entry => entry.DomainName === domain,
-    );
-
-    if (distribution) {
-      this.serverless.cli.log(
-        `Invalidating CloudFront distribution with id: ${distribution.Id}`,
+    // get distributid if not specified
+    if (!distributionId) {
+      const provider = this.serverless.getProvider('aws');
+      const domain = await this.domainInfo();
+      const result = await provider.request(
+        'CloudFront',
+        'listDistributions',
+        {},
+        this.options.stage,
+        this.options.region,
       );
+
+      const distributions = result.DistributionList.Items;
+      const distribution = distributions.find(
+        entry => entry.DomainName === domain,
+      );
+      if (distribution) {
+        distributionId = distribution.id
+      }
+    }
+
+    if (distributionId) {
       this.serverless.cli.log(
-        `Using profile: ${this.serverless.variables.service.provider.profile}`,
+        `Invalidating CloudFront distribution with id: ${distributionId}`,
       );
       const args = [
         'cloudfront',
         'create-invalidation',
         '--distribution-id',
-        distribution.Id,
+        distributionId,
         '--paths',
         '/*',
-        '--profile',
-        this.serverless.variables.service.provider.profile,
       ];
+      if (profile) {
+        this.serverless.cli.log(
+          `Using profile: ${profile}`,
+        )
+        args.push('--profile')
+        args.push(profile)
+      }
       const { stdout, sterr } = this.runAwsCommand(args);
       if (stdout) {
         this.serverless.cli.log('Successfully invalidated CloudFront cache');
